@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import List
 from unittest.mock import MagicMock, patch
@@ -357,3 +358,43 @@ def test_delete_by_metadata_complex(singlestore_db, mock_session):
         result = singlestore_db.delete_by_metadata({"spicy": False})
         assert result is True
         mock_delete_by_metadata.assert_called_once_with({"spicy": False})
+
+
+@pytest.mark.parametrize(
+    "distance,function_name,expected_order",
+    [
+        (Distance.l2, "euclidean_distance(", "ASC"),
+        (Distance.max_inner_product, "dot_product(", "DESC"),
+    ],
+)
+def test_search_orders_with_sql_functions(
+    mock_engine, mock_session, mock_embedder, distance, function_name, expected_order
+):
+    """l2 and max_inner_product must order through SQL functions.
+
+    The embedding column is declared as a placeholder TEXT column, so pgvector-style
+    Column methods such as embedding.max_inner_product do not exist on it.
+    """
+    with patch("agno.vectordb.singlestore.singlestore.sessionmaker") as mock_sessionmaker:
+        mock_sessionmaker.return_value = mock_session
+        db = SingleStore(
+            collection=TEST_COLLECTION,
+            schema=TEST_SCHEMA,
+            db_engine=mock_engine,
+            embedder=mock_embedder,
+            distance=distance,
+        )
+        db.create()
+        mock_session.execute.return_value.fetchall.return_value = []
+
+        assert db.search("hello") == []
+        assert asyncio.run(db.async_search("hello")) == []
+
+        stmt = mock_session.execute.call_args_list[-1][0][0]
+        sql = str(stmt)
+        assert function_name in sql
+        assert "max_inner_product(" not in sql
+        assert expected_order in sql
+        assert ("DESC" in sql) == (expected_order == "DESC")
+        expected_embedding = json.dumps(mock_embedder.get_embedding("hello"))
+        assert stmt.compile().params["embedding"] == expected_embedding

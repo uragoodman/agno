@@ -438,7 +438,12 @@ class SingleStore(VectorDb):
         stmt = self._apply_user_scope(stmt, user_id)
 
         if self.distance == Distance.l2:
-            stmt = stmt.order_by(self.table.c.embedding.max_inner_product(query_embedding))
+            # The embedding column is a placeholder TEXT column, so it has no
+            # pgvector-style distance methods; order through SingleStore's SQL function.
+            embeddings = json.dumps(query_embedding)
+            euclidean_expr = func.euclidean_distance(self.table.c.embedding, text(":embedding"))
+            stmt = stmt.order_by(euclidean_expr.asc())
+            stmt = stmt.params(embedding=embeddings)
         if self.distance == Distance.cosine:
             embeddings = json.dumps(query_embedding)
             dot_product_expr = func.dot_product(self.table.c.embedding, text(":embedding"))
@@ -446,7 +451,10 @@ class SingleStore(VectorDb):
             stmt = stmt.params(embedding=embeddings)
             # stmt = stmt.order_by(self.table.c.embedding.cosine_distance(query_embedding))
         if self.distance == Distance.max_inner_product:
-            stmt = stmt.order_by(self.table.c.embedding.max_inner_product(query_embedding))
+            embeddings = json.dumps(query_embedding)
+            dot_product_expr = func.dot_product(self.table.c.embedding, text(":embedding"))
+            stmt = stmt.order_by(dot_product_expr.desc())
+            stmt = stmt.params(embedding=embeddings)
 
         stmt = stmt.limit(limit=limit)
         log_debug(f"Query: {stmt}")
